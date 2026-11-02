@@ -30,7 +30,7 @@ RDMA_CORE_TAG=${RDMA_CORE_TAG:-}   # default: tag matching installed rdma-core
 RDMA_USER=${RDMA_USER:-$USER}
 NET_CONN=tbv0
 
-MODULE_OPTIONS="profile=linux_perf tbnet=prefer_rdma lanes=2 bind_services=1 allocate_rings=1 start_rings=1 negotiate_native=1 enable_tunnels=1 register_verbs=1 roce_netdev=tbv0 native_domain_mask=3 native_write_striping=1 dmabuf_verbs=1 dmabuf_coalesce_copy=1 dmabuf_reuse_buffers=1 nhi_interrupt_throttle_ns=0 dmabuf_host_direct=1 dmabuf_poll_us=25"
+MODULE_OPTIONS="profile=linux_perf tbnet=prefer_rdma lanes=2 bind_services=1 allocate_rings=1 start_rings=1 negotiate_native=1 enable_tunnels=1 register_verbs=1 roce_netdev=tbv0 native_domain_mask=3 native_write_striping=1 dmabuf_verbs=1 dmabuf_coalesce_copy=1 dmabuf_reuse_buffers=1 nhi_interrupt_throttle_ns=0 dmabuf_host_direct=1 dmabuf_poll_us=25 dmabuf_push_done=1 dmabuf_credits=1 dmabuf_poll_control=1"
 
 # Application order matters. The match-properties patch is the copy rebased for 7.2.14.
 KERNEL_PATCHES=(
