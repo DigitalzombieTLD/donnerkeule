@@ -1,0 +1,142 @@
+diff --git a/drivers/thunderbolt/xdomain.c b/drivers/thunderbolt/xdomain.c
+index cd2298c..af2116a 100644
+--- a/drivers/thunderbolt/xdomain.c
++++ b/drivers/thunderbolt/xdomain.c
+@@ -96,6 +96,66 @@ bool tb_is_xdomain_enabled(void)
+ 	return tb_xdomain_enabled && tb_acpi_is_xdomain_allowed();
+ }
+ 
++static size_t tb_xdomain_frame_payload_size(const struct ctl_pkg *pkg)
++{
++	return pkg->frame.size;
++}
++
++static u16 tb_xdp_length(const struct tb_xdp_header *hdr)
++{
++	return hdr->xd_hdr.length_sn & TB_XDOMAIN_LENGTH_MASK;
++}
++
++static bool tb_xdomain_match_properties(const struct tb_cfg_request *req,
++					const struct ctl_pkg *pkg)
++{
++	const struct tb_xdp_properties *prop_req = req->request;
++	const struct tb_xdp_properties_response *res = pkg->buffer;
++	const struct tb_xdp_header *res_hdr = pkg->buffer;
++	size_t payload_size = tb_xdomain_frame_payload_size(pkg);
++	size_t packet_size;
++	u16 chunk_len;
++	u16 xdp_len;
++
++	if (req->request_size < sizeof(*prop_req))
++		return false;
++	if (payload_size < sizeof(*res_hdr))
++		return false;
++
++	if (res_hdr->type == ERROR_RESPONSE)
++		return payload_size >= sizeof(struct tb_xdp_error_response);
++	if (res_hdr->type != PROPERTIES_RESPONSE)
++		return false;
++	if (payload_size < sizeof(*res))
++		return false;
++
++	xdp_len = tb_xdp_length(res_hdr);
++	if (xdp_len < sizeof(*res) / 4 - sizeof(res_hdr->xd_hdr) / 4)
++		return false;
++
++	packet_size = (xdp_len + sizeof(res_hdr->xd_hdr) / 4) * 4;
++	if (packet_size < sizeof(*res) || packet_size > payload_size)
++		return false;
++
++	if (!uuid_equal(&res->src_uuid, &prop_req->dst_uuid) ||
++	    !uuid_equal(&res->dst_uuid, &prop_req->src_uuid))
++		return false;
++
++	if (res->offset != prop_req->offset)
++		return false;
++	if (!res->data_length ||
++	    res->data_length > TB_XDP_PROPERTIES_MAX_LENGTH)
++		return false;
++	if (res->offset > res->data_length)
++		return false;
++
++	chunk_len = (packet_size - sizeof(*res)) / 4;
++	if (chunk_len > res->data_length - res->offset)
++		return false;
++
++	return true;
++}
++
+ static bool tb_xdomain_match(const struct tb_cfg_request *req,
+ 			     const struct ctl_pkg *pkg)
+ {
+@@ -107,7 +167,7 @@ static bool tb_xdomain_match(const struct tb_cfg_request *req,
+ 		const struct tb_xdp_header *res_hdr = pkg->buffer;
+ 		const struct tb_xdp_header *req_hdr = req->request;
+ 
+-		if (pkg->frame.size < req->response_size / 4)
++		if (tb_xdomain_frame_payload_size(pkg) < sizeof(*res_hdr))
+ 			return false;
+ 
+ 		/* Make sure route matches */
+@@ -121,6 +181,13 @@ static bool tb_xdomain_match(const struct tb_cfg_request *req,
+ 		if (!uuid_equal(&res_hdr->uuid, &req_hdr->uuid))
+ 			return false;
+ 
++		if (uuid_equal(&req_hdr->uuid, &tb_xdp_uuid) &&
++		    req_hdr->type == PROPERTIES_REQUEST)
++			return tb_xdomain_match_properties(req, pkg);
++
++		if (pkg->frame.size < req->response_size / 4)
++			return false;
++
+ 		return true;
+ 	}
+ 
+@@ -132,8 +199,10 @@ static bool tb_xdomain_match(const struct tb_cfg_request *req,
+ static bool tb_xdomain_copy(struct tb_cfg_request *req,
+ 			    const struct ctl_pkg *pkg)
+ {
+-	size_t len = min_t(size_t, pkg->frame.size, req->response_size);
++	size_t len = min_t(size_t, tb_xdomain_frame_payload_size(pkg),
++			   req->response_size);
+ 
++	memset(req->response, 0, req->response_size);
+ 	memcpy(req->response, pkg->buffer, len);
+ 	req->result.err = 0;
+ 	return true;
+@@ -379,7 +448,7 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
+ 		 * least size of the response structure.
+ 		 */
+ 		len = res->hdr.xd_hdr.length_sn & TB_XDOMAIN_LENGTH_MASK;
+-		if (len < sizeof(*res) / 4) {
++		if (len < sizeof(*res) / 4 - sizeof(res->hdr.xd_hdr) / 4) {
+ 			ret = -EINVAL;
+ 			goto err;
+ 		}
+@@ -391,11 +460,26 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
+ 			goto err;
+ 		}
+ 
++		if (!uuid_equal(&res->src_uuid, dst_uuid) ||
++		    !uuid_equal(&res->dst_uuid, src_uuid)) {
++			ret = -EINVAL;
++			goto err;
++		}
++
+ 		if (res->offset != req.offset) {
+ 			ret = -EINVAL;
+ 			goto err;
+ 		}
+ 
++		if (!res->data_length ||
++		    res->data_length > TB_XDP_PROPERTIES_MAX_LENGTH ||
++		    (data && res->data_length != data_len) ||
++		    res->offset > res->data_length ||
++		    len > res->data_length - res->offset) {
++			ret = -EINVAL;
++			goto err;
++		}
++
+ 		/*
+ 		 * First time allocate block that has enough space for
+ 		 * the whole properties block.
